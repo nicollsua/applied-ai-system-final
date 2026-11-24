@@ -4,7 +4,7 @@
     python eval.py --live    # real Gemini calls
 
 Prints a pass/fail table for the schedule import agent and the music RAG,
-plus average confidence, and writes the same tables to logs/eval_results.md.
+plus average confidence, and writes the same tables to logs/eval_results_offline.md or logs/eval_results_live.md.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pawpal_system import Task
 from schedule_agent import ImportResult, import_schedule, sample_owner
 
 DAY = date(2026, 11, 23)  # a Monday, fixed so runs are reproducible
-RESULTS_PATH = Path(__file__).resolve().parent / "logs" / "eval_results.md"
+LOGS_DIR = Path(__file__).resolve().parent / "logs"
 
 
 def _t(pet, title, minutes, time=None, freq="daily", weekday=None, priority="medium", conf=0.9):
@@ -183,7 +183,7 @@ def table(headers: list[str], rows: list[list[str]]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Evaluate the PawPal+ AI features.")
     parser.add_argument("--live", action="store_true", help="call Gemini instead of FakeLLM")
-    parser.add_argument("--no-save", action="store_true", help="don't write logs/eval_results.md")
+    parser.add_argument("--no-save", action="store_true", help="don't write the results file")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.ERROR)
 
@@ -215,9 +215,10 @@ def main(argv: list[str] | None = None) -> int:
     report = "\n".join(out)
     print(report)
     if not args.no_save:
-        RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        RESULTS_PATH.write_text(report + "\n", encoding="utf-8")
-        print(f"\nSaved to {RESULTS_PATH.relative_to(Path(__file__).resolve().parent)}")
+        path = LOGS_DIR / f"eval_results_{'live' if args.live else 'offline'}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(report + "\n", encoding="utf-8")
+        print(f"\nSaved to logs/{path.name}")
     return 0 if import_passed + music_passed == total else 1
 
 
