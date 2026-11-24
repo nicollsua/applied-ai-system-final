@@ -109,8 +109,11 @@ def build_retry_prompt(text: str, owner: Owner, previous: str, errors: list[str]
         f"{_context(owner)}\nOriginal schedule text:\n{text}\n\n"
         f"Your previous answer:\n{previous}\n\n"
         f"It had these problems:\n{error_lines}\n\n"
-        "Return a corrected, complete JSON array (ONLY JSON). Drop a task only "
-        "if it cannot be fixed from the original text."
+        "Return a corrected, complete JSON array (ONLY JSON). Fix formatting "
+        "and misread details using the original text. Never change a time, "
+        "pet, or duration the owner actually stated just to make a check "
+        "pass; if a problem can only be fixed that way, return that task "
+        "unchanged so the owner sees why it was refused."
     )
 
 
@@ -377,6 +380,8 @@ def import_schedule(
         result.rejected.append(RejectedItem(text, errors or ["no tasks returned"]))
     else:
         result.rejected.extend(rejected)
+        if not items:
+            result.rejected.append(RejectedItem(text, ["no pet care tasks found in the text"]))
 
     for task, pet, confidence in valid:
         if commit:

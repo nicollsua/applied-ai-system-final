@@ -172,3 +172,13 @@ def test_fake_llm_records_and_queues():
     llm = FakeLLM(["a"], default="d")
     assert llm.ask("p1", "s") == "a" and llm.ask("p2") == "d"
     assert llm.prompts == ["p1", "p2"]
+
+
+def test_empty_task_list_reported(tmp_path):
+    result, owner, _ = run([[]], tmp_path)
+    assert not result.added and "no pet care tasks" in result.rejected[0].reasons[0]
+
+
+def test_retry_prompt_forbids_changing_stated_details(tmp_path):
+    _, _, llm = run([[item(fixed_time="23:00")]] * 3, tmp_path)
+    assert "Never change a time" in llm.prompts[1]
