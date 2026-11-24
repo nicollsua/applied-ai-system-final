@@ -17,6 +17,6 @@ Pet care planner. Owner (day_start/day_end window) has Pets; each Pet has Tasks 
 - Python only. Minimal edits; never rewrite working files. Existing tests must keep passing.
 - Tests must pass with FakeLLM and no API key. Key from env `GEMINI_API_KEY`; `.env` in `.gitignore`, never committed.
 - Keep `requirements.txt` and `.env.example` current.
-- Don't touch `diagrams/uml.mmd` or docs (README, model_card.md, reflection.md, ai_interactions.md, architecture diagram) — user writes those.
+- Don't touch `diagrams/uml.mmd` or `reflection.md` (Module 2). Claude may update README, model_card.md, ai_interactions.md and diagrams/architecture.mmd (user approved 2026-11-23); keep numbers in them matching real test/eval output.
 - Run pytest before finishing each task; one git commit per finished task with a clear message.
 - Replies: code only, no explanations, show only changed lines.

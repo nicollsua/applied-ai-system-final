@@ -1,0 +1,70 @@
+---
+title: PawPal+ Schedule Import Agent and Music RAG Pipeline
+---
+flowchart TD
+    owner([Owner - human])
+    ui["app.py - Streamlit UI"]
+
+    owner -- "pastes schedule text" --> ui
+    owner -- "ticks 'Suggest music' per task" --> ui
+    ui -- "plan, picks, rejections shown" --> owner
+
+    subgraph agent["Agentic schedule import - schedule_agent.py"]
+        guard["guardrails.check_input:<br/>reject empty / oversized,<br/>strip prompt-injection phrases"]
+        llm1["LLM (Gemini via llm.py, safe_ask):<br/>text to JSON tasks<br/>with confidence 0-1"]
+        parse["Parse JSON<br/>(strip code fences,<br/>invalid JSON = error)"]
+        validate["Validator: known pet, duration over 0,<br/>valid enums, inside day window,<br/>no clash via Scheduler.find_conflicts"]
+        ok{"All items valid?"}
+        retry["Send errors + original text<br/>back to LLM (max 2 retries)"]
+        rejected["Rejected items<br/>with reasons"]
+        preview["Preview: proposed tasks with confidence;<br/>low confidence (under 0.6) starts unticked"]
+    end
+
+    ui --> guard
+    guard -- "input rejected: friendly message" --> ui
+    guard --> llm1 --> parse --> validate --> ok
+    ok -- "no, retries left" --> retry --> llm1
+    ok -- "still failing after 2 retries" --> rejected
+    ok -- "yes / valid subset" --> preview
+    rejected --> ui
+    preview --> review
+
+    review{{"Human review:<br/>owner unticks / confirms"}}
+    review -- "Add selected" --> commit["commit_tasks: re-check conflicts,<br/>Pet.add_task"]
+
+    subgraph core["PawPal+ core - pawpal_system.py"]
+        tasks["Task list per pet<br/>(Task.music_enabled)"]
+        gen["Schedule.generate:<br/>pin fixed times, fill gaps by priority"]
+        plan["Daily plan + explain()"]
+    end
+
+    commit --> tasks
+    ui -- "manual Add task form" --> tasks
+    tasks --> gen --> plan
+
+    subgraph rag["Music RAG - music_rag.py"]
+        enabled{"music_enabled?"}
+        vibe["Retrieve vibe from data/vibes.md<br/>(title keywords + synonyms)"]
+        top5["Retrieve top 5 songs from data/songs.csv<br/>(tags, energy range, mood)"]
+        llm2["LLM picks 1-2 ONLY from the 5,<br/>one-line reason each"]
+        verify["Guard: drop any song not in the 5;<br/>LLM down or nothing valid = top retrieved song"]
+    end
+
+    plan --> enabled
+    enabled -- "no" --> ui
+    enabled -- "yes" --> vibe --> top5 --> llm2 --> verify
+    verify -- "song + reason in Music column" --> ui
+
+    subgraph rel["Reliability and testing"]
+        trace["logging module +<br/>logs/agent_trace.md (live runs)"]
+        tests["pytest: 501 tests with FakeLLM,<br/>no API key needed"]
+        evals["eval.py: 14 fixed cases,<br/>pass/fail + avg confidence"]
+        demo["demo.py: 3 end-to-end scenarios"]
+    end
+
+    llm1 -. "raw responses" .-> trace
+    validate -. "errors, retry number, outcome" .-> trace
+    tests -. "check guardrails, parser,<br/>validator, retries, RAG, UI" .-> agent
+    tests -.-> rag
+    evals -.-> agent
+    evals -.-> rag
