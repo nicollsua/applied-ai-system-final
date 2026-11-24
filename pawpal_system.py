@@ -121,6 +121,7 @@ class Task:
     fixed_time: time | None = None
     completed: bool = False
     pet: Pet | None = None
+    music_enabled: bool = False  # ask music_rag.py for a soundtrack
 
     def mark_complete(self) -> None:
         """Mark this task done so it drops out of the remaining plan."""

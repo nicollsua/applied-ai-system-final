@@ -32,6 +32,7 @@ from pawpal_system import (
     Scheduler,
     Task,
 )
+from music_rag import pick_music
 from schedule_agent import ImportResult, commit_tasks, import_schedule
 
 WEEKDAY_NAMES = [
@@ -115,6 +116,7 @@ def add_task(
     weekday: int | None = None,
     due_date: date | None = None,
     fixed_time: time | None = None,
+    music_enabled: bool = False,
 ) -> Task | None:
     """Build a Task from form input and hand it to Pet.add_task().
 
@@ -140,6 +142,7 @@ def add_task(
         weekday=weekday if frequency is Frequency.WEEKLY else None,
         due_date=due_date if frequency is Frequency.ONCE else None,
         fixed_time=fixed_time,
+        music_enabled=bool(music_enabled),
     )
     pet.add_task(task)
     return task
@@ -158,10 +161,15 @@ def find_pet(owner: Owner, label: str) -> Pet | None:
 # --- Display helpers --------------------------------------------------------
 
 
-def plan_rows(schedule) -> list[dict]:
-    """Turn a Schedule's placed tasks into rows for a table."""
-    return [
-        {
+def plan_rows(schedule, music: dict | None = None) -> list[dict]:
+    """Turn a Schedule's placed tasks into rows for a table.
+
+    `music` maps id(task) to a pick summary. The Music column only appears
+    when at least one task has music turned on.
+    """
+    rows = []
+    for item in schedule.scheduled:
+        row = {
             "Time": f"{item.start_time:%H:%M} - {item.end_time:%H:%M}",
             "Task": item.task.title,
             "Pet": item.task.pet.name if item.task.pet else "-",
@@ -169,8 +177,32 @@ def plan_rows(schedule) -> list[dict]:
             "Priority": item.task.priority.value,
             "Why": item.reason,
         }
-        for item in schedule.scheduled
-    ]
+        if music:
+            row["Music"] = music.get(id(item.task), "")
+        rows.append(row)
+    return rows
+
+
+def music_for(state: MutableMapping, tasks: list[Task], llm=None) -> dict:
+    """Return {id(task): music summary} for the tasks with music turned on.
+
+    Picks are cached in state by task title so each one costs at most one
+    LLM call, not one per Streamlit rerun.
+    """
+    cache = state.setdefault("music_cache", {})
+    picks = {}
+    for task in tasks:
+        if not task.music_enabled:
+            continue
+        key = task.title.strip().lower()
+        if key not in cache:
+            pick = pick_music(task, llm)
+            label = pick.summary()
+            if pick.used_fallback:
+                label += " [retrieval only]"
+            cache[key] = label
+        picks[id(task)] = "🎵 " + cache[key]
+    return picks
 
 
 def skipped_rows(schedule) -> list[dict]:
@@ -421,6 +453,7 @@ def draw_task_fields(owner: Owner) -> dict:
                          key="task_pinned")
     fixed_time = st.time_input("At (used only if ticked)",
                                value=time(8, 0), key="task_time")
+    music = st.checkbox("🎵 Suggest music for this task", key="task_music")
 
     return {
         "pet": find_pet(owner, pet_label),
@@ -431,6 +464,7 @@ def draw_task_fields(owner: Owner) -> dict:
         "weekday": WEEKDAY_NAMES.index(weekday_name),
         "due_date": once_date,
         "fixed_time": fixed_time if pinned else None,
+        "music_enabled": music,
     }
 
 
@@ -503,7 +537,11 @@ def render_import(owner: Owner, day: date) -> None:
                             key=f"import_keep_{run}_{i}")
                 for i, p in enumerate(result.added)
             ]
+            music = st.checkbox("🎵 Suggest music for these tasks",
+                                key=f"import_music_{run}")
             if st.button("Add selected tasks", key="import_confirm"):
+                for proposal in result.added:
+                    proposal.task.music_enabled = music
                 added, refused = confirm_import(state, owner, keep, day)
                 note = f"Added {len(added)} task(s) from your text."
                 if refused:
@@ -606,8 +644,15 @@ def render_schedule(owner: Owner, day: date) -> None:
 
     schedule = Scheduler(owner).plan_for(day)
 
+    state = st.session_state
+    music = {}
+    if any(item.task.music_enabled for item in schedule.scheduled):
+        llm = get_llm(state) if ai_available(state) else None
+        with st.spinner("Picking music..."):
+            music = music_for(state, [i.task for i in schedule.scheduled], llm)
+
     if schedule.scheduled:
-        st.dataframe(plan_rows(schedule), width="stretch",
+        st.dataframe(plan_rows(schedule, music), width="stretch",
                      hide_index=True)
         used = schedule.total_minutes()
         available = owner.available_minutes()

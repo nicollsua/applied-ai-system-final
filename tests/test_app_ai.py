@@ -109,3 +109,50 @@ def test_import_guardrail_message_in_app():
     at.button(key="import_run_button").click().run()
     assert "empty" in " ".join(m.value for m in at.markdown).lower()
     assert not at.exception
+
+
+# --- music in the plan -------------------------------------------------------
+
+
+def test_music_column_only_when_enabled():
+    from pawpal_system import Scheduler
+    owner = owner_with_pets()
+    app.add_task(owner.pets[0], "Morning walk", 30, app.Priority.HIGH)
+    schedule = Scheduler(owner).plan_for(DAY)
+    assert "Music" not in app.plan_rows(schedule)[0]
+
+    owner.pets[1].tasks.clear()
+    app.add_task(owner.pets[1], "Bath", 20, app.Priority.LOW, music_enabled=True)
+    schedule = Scheduler(owner).plan_for(DAY)
+    music = app.music_for({}, [i.task for i in schedule.scheduled])
+    rows = app.plan_rows(schedule, music)
+    bath = next(r for r in rows if r["Task"] == "Bath")
+    walk = next(r for r in rows if r["Task"] == "Morning walk")
+    assert bath["Music"].startswith("🎵") and walk["Music"] == ""
+
+
+def test_music_cached_one_llm_call_per_task():
+    owner = owner_with_pets()
+    task = app.add_task(owner.pets[0], "Evening walk", 30, app.Priority.HIGH, music_enabled=True)
+    from music_rag import find_vibe, retrieve
+    top = retrieve(find_vibe("Evening walk"))[0]
+    llm = FakeLLM([json.dumps([{"id": top.id, "reason": "upbeat stroll"}])])
+    state = {}
+    first = app.music_for(state, [task], llm)
+    second = app.music_for(state, [task], llm)
+    assert len(llm.prompts) == 1 and first == second
+    assert top.title in first[id(task)] and "upbeat stroll" in first[id(task)]
+
+
+def test_music_shown_in_app_plan():
+    from music_rag import find_vibe, retrieve
+    top = retrieve(find_vibe("Bath"))[0]
+    at = launch_with_pets([json.dumps([{"id": top.id, "reason": "calming"}])])
+    at.selectbox("task_pet").set_value("Biscuit (dog)")
+    at.text_input("task_title").set_value("Bath")
+    at.checkbox("task_music").set_value(True)
+    at.button[1].click().run()
+    frames = [e for e in at.main if type(e).__name__ == "Dataframe"]
+    plan = next(f for f in frames if "Why" in f.value.columns)
+    assert top.title in " ".join(plan.value["Music"].tolist())
+    assert not at.exception
