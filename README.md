@@ -37,7 +37,7 @@ Mermaid source: [`diagrams/architecture.mmd`](diagrams/architecture.mmd)
 4. **Human review.** Valid tasks come back as a preview with confidence scores. The owner unticks anything wrong and clicks **Add selected**. `commit_tasks` re-checks clashes and calls `Pet.add_task`.
 5. **Planning.** The original `Schedule.generate()` places everything in the day.
 6. **Music RAG.** For tasks with 🎵 on: the vibe is retrieved from `vibes.md`, the top 5 songs are scored from `songs.csv` (tag match, energy range, mood), Gemini chooses among those 5, and a guard drops anything else. Picks are cached per task title so each costs at most one call.
-7. **Reliability.** Every step is logged. Live imports are added to `logs/agent_trace.md`. 501 pytest tests and `eval.py` use `FakeLLM`, so they run without a key.
+7. **Reliability.** Every step is logged. Live imports are added to `logs/agent_trace.md`. 502 pytest tests and `eval.py` use `FakeLLM`, so they run without a key.
 
 All model calls go through one interface, `ask(prompt, system) -> str`. `GeminiLLM` and `FakeLLM` both implement it ([`llm.py`](llm.py)), so the same pipeline runs live, in tests, or in a scripted demo.
 
@@ -82,7 +82,7 @@ streamlit run app.py                     # the app: add pets, then open "✨ Imp
 python demo.py                           # 3 end-to-end scenarios, offline (add --live for Gemini)
 python eval.py                           # evaluation table, offline (add --live for Gemini)
 python schedule_agent.py "Walk Biscuit at 9am for 30 minutes" --live   # one import from the CLI
-python -m pytest                         # 501 tests, no key needed
+python -m pytest                         # 502 tests, no key needed
 ```
 
 > **Quota note:** the Gemini free tier allows **20 requests per day** for `gemini-3.8-flash`. One `eval.py --live` run uses about 15–20 of them, so use the offline modes for repeated runs. Don't paste personal information into the import box, because the text is sent to Google's API.
@@ -164,6 +164,23 @@ That run also logged `Temporary LLM error (503 UNAVAILABLE ...); retrying in 2s`
 
 **How retrieval changes the output.** Without retrieval, a model asked for "music for giving my cat a pill" can suggest any song in the world: songs that aren't in the app's catalog, or upbeat tracks that don't match a stressful moment. With retrieval, the model only ever sees 5 songs already filtered to energy 1–2 and calm moods. Its job shrinks to choosing and explaining. In the offline eval the scripted reply also names "Thunderstruck", which isn't a candidate, and the guard drops it (`dropped: Thunderstruck (not a retrieved candidate, not in songs.csv)`).
 
+**Before/after: why two sources beat one.** The retrieval combines a custom document (`data/vibes.md`, which gives each kind of task an energy range and moods, plus a synonym list) with the song catalog (`data/songs.csv`). `eval.py` compares that with a single-source baseline that only matches title words against song tags. It counts how many of the 5 candidates fall inside the energy range the task needs:
+
+```text
+$ python eval.py
+## Retrieval impact (candidates inside the task's energy range)
+| Task                   | Target energy | Baseline | Multi-source RAG |
+|------------------------|---------------|----------|------------------|
+| Give Mochi her pill    | 1-2           | 0/5      | 5/5              |
+| Bath for Biscuit       | 1-4           | 4/5      | 5/5              |
+| Play fetch in the yard | 8-10          | 5/5      | 5/5              |
+| Brush Mochi            | 2-4           | 0/5      | 5/5              |
+| Scoop litter box       | 6-9           | 3/5      | 5/5              |
+- Retrieval: 12/25 candidates in range with the baseline, 25/25 with multi-source RAG
+```
+
+For "Give Mochi her pill", the baseline finds no tag matching "pill". It falls back to the first songs in the file, so Gemini would choose among *Walking on Sunshine (9), Here Comes the Sun (5), Happy (8), Don't Stop Me Now (10), Eye of the Tiger (9)*, which are all wrong for a nervous cat. With `vibes.md`, "pill" maps to the *medication / vet visit* vibe (energy 1–2, anxiety-reducing). Gemini then chooses among *Weightless, Clair de Lune, Gymnopédie No. 1, Come Away With Me, What a Wonderful World*, and in the live run it picked Weightless and Clair de Lune.
+
 ### 4. Messy input, injection and outages (`python demo.py`, offline)
 
 ```text
@@ -227,7 +244,7 @@ In `streamlit run app.py`, add the pets first, then open **✨ Import tasks from
 
 | Mechanism | What it covers |
 |---|---|
-| **Automated tests**: 501 pytest tests, all passing, no API key | 437 original scheduler/UI tests still pass, plus 64 new ones: agent (19), guardrails (15), music RAG (18), app integration through Streamlit's `AppTest` (9), eval/demo (3) |
+| **Automated tests**: 502 pytest tests, all passing, no API key | 437 original scheduler/UI tests still pass, plus 65 new ones: agent (19), guardrails (15), music RAG (18), app integration through Streamlit's `AppTest` (9), eval/demo (4) |
 | **Confidence scoring** | Every imported task carries the model's 0–1 confidence. It's shown in the preview, and under 0.6 the task starts unticked |
 | **Validation and retry** | Deterministic checks decide what is valid, never the model. Errors go back to the model at most twice |
 | **Logging and error handling** | `logging` in every module. [`logs/agent_trace.md`](logs/agent_trace.md) records each live attempt. API errors become friendly messages, and temporary ones are retried |
@@ -264,7 +281,7 @@ In `streamlit run app.py`, add the pets first, then open **✨ Import tasks from
 
 The "retrieval fallback" rows are real: the free-tier daily quota (429) ran out partway through the music cases, and the fallback still returned catalog songs that fit the vibe. **`python eval.py`** (offline, scripted replies, [`logs/eval_results_offline.md`](logs/eval_results_offline.md)) passes **14/14**, with an average confidence of 0.86. Its extra case recovers from two invalid-JSON replies on the third attempt.
 
-**Summary:** 501/501 tests pass. The eval passes 14/14 offline and 13/13 live. Live confidence averaged 0.95 but wasn't a reliable signal: a deliberately vague input also scored 0.95, so the validator and human review carry the real weight. The two failures seen live were both outside the model's control: a retired model name (404) and high demand (503). Both were handled without a crash, and the 503 case led to the automatic retry.
+**Summary:** 502/502 tests pass. The eval passes 14/14 offline and 13/13 live. Live confidence averaged 0.95 but wasn't a reliable signal: a deliberately vague input also scored 0.95, so the validator and human review carry the real weight. The two failures seen live were both outside the model's control: a retired model name (404) and high demand (503). Both were handled without a crash, and the 503 case led to the automatic retry.
 
 ## Design decisions and trade-offs
 
@@ -294,7 +311,7 @@ The "retrieval fallback" rows are real: the free-tier daily quota (429) ran out 
 
 ```text
 $ python -m pytest
-501 passed in 7.8s
+502 passed in 8.8s
 ```
 
 ## Reflection
@@ -325,7 +342,7 @@ data/                vibes.md, songs.csv (RAG sources)
 diagrams/            architecture.mmd (system), uml_final.mmd (classes)
 assets/              Architecture diagram PNG
 logs/                agent_trace.md, eval_results_*.md, demo_output.txt
-tests/ + test_*.py   501 pytest tests
+tests/ + test_*.py   502 pytest tests
 model_card.md        Limitations, misuse, testing surprises, AI collaboration
 ```
 

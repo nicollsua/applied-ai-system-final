@@ -7,7 +7,7 @@
 | **Base project** | PawPal+ (Module 2), a Streamlit pet care planner |
 | **Model** | Google Gemini `gemini-3.8-flash` through the `google-genai` SDK ([`llm.py`](llm.py)) |
 | **AI features** | 1. Agentic schedule import: plain text becomes validated tasks, with a retry loop ([`schedule_agent.py`](schedule_agent.py))<br>2. Music per task with retrieval-augmented generation ([`music_rag.py`](music_rag.py)) |
-| **Reliability layer** | [`guardrails.py`](guardrails.py), human review before tasks are added, [`logs/agent_trace.md`](logs/agent_trace.md), 501 pytest tests, [`eval.py`](eval.py) |
+| **Reliability layer** | [`guardrails.py`](guardrails.py), human review before tasks are added, [`logs/agent_trace.md`](logs/agent_trace.md), 502 pytest tests, [`eval.py`](eval.py) |
 | **Intended use** | One pet owner turning their own routine ("walk Biscuit at 9am…") into a daily plan, plus optional background music for each task |
 | **Not intended for** | Veterinary or medical advice, scheduling for many people, or any decision where a wrong time causes harm without a person checking it first |
 
@@ -43,7 +43,18 @@ The model never writes directly into the plan. Everything it produces goes throu
 4. **A retry can quietly make things worse.** My first retry prompt said "drop a task only if it cannot be fixed". That gives the model two bad options: move the owner's 7:30 appointment to make the clash disappear, or drop it so the rejection never reaches the owner. I changed the prompt to forbid changing stated details, and I made an empty result count as a rejection ("no pet care tasks found") so it can't vanish.
 5. **Confidence didn't separate good from bad inputs** (see Limitations). It averaged 0.95 live and 0.86 with the scripted offline replies.
 
-Final numbers: **501/501 pytest tests pass** with no API key. **`eval.py` offline: 14/14 cases pass.** **`eval.py --live`: 13/13 pass** (one offline-only case is skipped live), with 0.95 average confidence. In that live run, 3 of the 4 music cases used the retrieval-only fallback because the daily quota ran out partway through, and the fallback picks were still grounded in the catalog.
+Final numbers: **502/502 pytest tests pass** with no API key. **`eval.py` offline: 14/14 cases pass.** **`eval.py --live`: 13/13 pass** (one offline-only case is skipped live), with 0.95 average confidence. In that live run, 3 of the 4 music cases used the retrieval-only fallback because the daily quota ran out partway through, and the fallback picks were still grounded in the catalog.
+
+**Retrieval impact:** adding `vibes.md` as a second source raised the share of candidate songs inside the task's target energy range from **12/25 (single-source tag matching) to 25/25**. The biggest gains were for tasks whose words don't appear in song tags: "pill" went from 0/5 to 5/5 and "brush" from 0/5 to 5/5. See `python eval.py` → *Retrieval impact*.
+
+## Future improvements
+
+- **Ask instead of guess.** When a pet reference is ambiguous (two dogs, "the dog"), have the agent return a clarifying question rather than picking one.
+- **Calibrate confidence.** Replace the model's self-rating with signals the code can check: did the text state an explicit time, an explicit duration, an exact pet name? Then the low-confidence flag would mean something.
+- **Smarter retrieval.** Use embeddings instead of keyword and synonym matching, so non-English or unusual task names still find the right vibe. Also let owners add their own songs or playlists as a third source.
+- **Richer recurrence.** Support "every other day", "weekdays only" and "next Tuesday", which the daily/weekly/once model can't represent yet.
+- **Edit in the preview.** Let the owner fix a proposed task's time or duration in the review step instead of only accepting or rejecting it.
+- **Cheaper live evaluation.** Batch the eval cases or use a paid tier so a live run doesn't use up the 20-request daily quota.
 
 ---
 
@@ -54,7 +65,7 @@ I built the AI extension with Claude Code (an AI coding agent working in my repo
 ### A suggestion I accepted
 
 **The `FakeLLM` design**: an object with the same `ask(prompt, system)` method as the Gemini wrapper. It returns queued canned replies and records every prompt it gets. I accepted it as written because it meant:
-- every test (501) runs offline, for free and with the same result every time
+- every test (502) runs offline, for free and with the same result every time
 - tests can check what was *sent* to the model, for example "the retry prompt contains the validation errors" or "the injection phrase was stripped before the prompt"
 - `demo.py` and `eval.py` can show the whole pipeline without spending my 20 daily requests
 

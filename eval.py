@@ -17,7 +17,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from llm import FakeLLM
-from music_rag import find_vibe, pick_music, retrieve
+from music_rag import find_vibe, load_songs, pick_music, retrieve
 from pawpal_system import Task
 from schedule_agent import ImportResult, import_schedule, sample_owner
 
@@ -173,6 +173,29 @@ def run_music_cases(live: bool) -> tuple[list[list[str]], int]:
     return rows, passed
 
 
+RETRIEVAL_TASKS = ["Give Mochi her pill", "Bath for Biscuit", "Play fetch in the yard",
+                   "Brush Mochi", "Scoop litter box"]
+
+
+def baseline_retrieve(title: str, k: int = 5) -> list:
+    """Single-source baseline: match title words against songs.csv tags only."""
+    words = set(title.lower().split())
+    return sorted(load_songs(), key=lambda s: (-len(words & set(s.tags)), s.id))[:k]
+
+
+def run_retrieval_comparison() -> tuple[list[list[str]], int, int]:
+    """Count candidates inside the task's energy range: baseline vs vibes.md + songs.csv."""
+    rows, base_total, rag_total = [], 0, 0
+    for title in RETRIEVAL_TASKS:
+        vibe = find_vibe(title)
+        in_range = lambda songs: sum(vibe.energy_min <= s.energy <= vibe.energy_max for s in songs)
+        base, rag = in_range(baseline_retrieve(title)), in_range(retrieve(vibe))
+        base_total += base
+        rag_total += rag
+        rows.append([title, f"{vibe.energy_min}-{vibe.energy_max}", f"{base}/5", f"{rag}/5"])
+    return rows, base_total, rag_total
+
+
 def table(headers: list[str], rows: list[list[str]]) -> str:
     widths = [max(len(h), *(len(r[i]) for r in rows)) for i, h in enumerate(headers)]
     line = lambda cells: "| " + " | ".join(c.ljust(w) for c, w in zip(cells, widths)) + " |"
@@ -191,6 +214,8 @@ def main(argv: list[str] | None = None) -> int:
     trace = "default" if args.live else None  # live runs are kept in logs/agent_trace.md
     import_rows, confidences, import_passed = run_import_cases(args.live, trace=trace)
     music_rows, music_passed = run_music_cases(args.live)
+    retrieval_rows, base_total, rag_total = run_retrieval_comparison()
+    slots = 5 * len(retrieval_rows)
 
     avg = sum(confidences) / len(confidences) if confidences else 0.0
     total = len(import_rows) + len(music_rows)
@@ -205,12 +230,21 @@ def main(argv: list[str] | None = None) -> int:
         "",
         table(["#", "Task", "Vibe", "Picks", "Grounded", "Result", "Notes"], music_rows),
         "",
+        "## Retrieval impact (candidates inside the task's energy range)",
+        "",
+        "Baseline = title words vs songs.csv tags only. Multi-source = vibe from vibes.md "
+        "(+ synonyms) then songs.csv scored by tags, energy and mood.",
+        "",
+        table(["Task", "Target energy", "Baseline", "Multi-source RAG"], retrieval_rows),
+        "",
         "## Summary",
         "",
         f"- Import agent: {import_passed}/{len(import_rows)} passed",
         f"- Music RAG: {music_passed}/{len(music_rows)} passed",
         f"- Overall: {import_passed + music_passed}/{total} passed",
         f"- Average confidence of added tasks: {avg:.2f} ({len(confidences)} tasks)",
+        f"- Retrieval: {base_total}/{slots} candidates in range with the baseline, "
+        f"{rag_total}/{slots} with multi-source RAG",
     ]
     report = "\n".join(out)
     print(report)

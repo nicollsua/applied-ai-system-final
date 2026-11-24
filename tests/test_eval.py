@@ -21,3 +21,8 @@ def test_demo_runs_offline(capsys, monkeypatch):
     assert demo.main([]) == 0
     out = capsys.readouterr().out
     assert "unknown pet 'Rex'" in out and "fallback=True" in out and "Riptide" in out
+
+
+def test_retrieval_comparison_shows_improvement():
+    rows, base, rag = harness.run_retrieval_comparison()
+    assert len(rows) == 5 and rag == 25 and base < rag
