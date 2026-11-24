@@ -16,6 +16,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
+from guardrails import GuardrailError, LLMUnavailable, check_input, safe_ask
 from pawpal_system import (
     Frequency,
     Owner,
@@ -29,7 +30,8 @@ from pawpal_system import (
 logger = logging.getLogger("schedule_agent")
 
 MAX_RETRIES = 2
-TRACE_PATH = Path("logs") / "agent_trace.md"
+LOW_CONFIDENCE = 0.6  # below this the UI asks the owner to double-check
+TRACE_PATH = Path(__file__).resolve().parent / "logs" / "agent_trace.md"
 
 SYSTEM_PROMPT = (
     "You convert a pet owner's plain-text schedule into pet care tasks. "
@@ -54,6 +56,11 @@ class LLM(Protocol):
 class AddedTask:
     task: Task
     confidence: float
+    pet: Pet | None = None
+
+    @property
+    def low_confidence(self) -> bool:
+        return self.confidence < LOW_CONFIDENCE
 
 
 @dataclass
@@ -67,10 +74,18 @@ class ImportResult:
     added: list[AddedTask] = field(default_factory=list)
     rejected: list[RejectedItem] = field(default_factory=list)
     attempts: int = 0
+    warnings: list[str] = field(default_factory=list)
+    committed: bool = True
 
     @property
     def ok(self) -> bool:
         return bool(self.added) and not self.rejected
+
+    @property
+    def average_confidence(self) -> float:
+        if not self.added:
+            return 0.0
+        return sum(a.confidence for a in self.added) / len(self.added)
 
 
 # --- Prompts -----------------------------------------------------------------
@@ -283,16 +298,35 @@ def import_schedule(
     day: date | None = None,
     max_retries: int = MAX_RETRIES,
     trace_path: Path | str | None = TRACE_PATH,
+    commit: bool = True,
 ) -> ImportResult:
-    """Parse plain text into tasks with the LLM, validate, retry, and add the valid ones."""
+    """Parse plain text into tasks with the LLM, validate, retry, and add the valid ones.
+
+    With commit=False nothing is added: result.added holds the validated
+    tasks (each with its pet) so a person can review them first and then
+    call commit_tasks() with the ones they keep.
+    """
     day = day or date.today()
     trace = Trace(trace_path)
-    result = ImportResult()
+    result = ImportResult(committed=commit)
 
     trace.write(
         f"Import run {datetime.now():%Y-%m-%d %H:%M:%S}",
-        f"Owner: {owner.name}; pets: {', '.join(p.name for p in owner.pets)}\n\nInput:\n{_block(text)}",
+        f"Owner: {owner.name}; pets: {', '.join(p.name for p in owner.pets)}\n\n"
+        f"Input:\n{_block(text or '')}",
     )
+
+    try:
+        checked = check_input(text)
+    except GuardrailError as exc:
+        logger.warning("Input rejected by guardrail: %s", exc)
+        result.rejected.append(RejectedItem(text, [f"guardrail: {exc}"]))
+        trace.write("Final outcome", f"Input rejected by guardrail: {exc}")
+        return result
+    text = checked.text
+    result.warnings.extend(checked.warnings)
+    for warning in checked.warnings:
+        trace.write("Guardrail", warning)
     logger.info("Import started for %s (%d chars)", owner.name, len(text))
 
     prompt = build_prompt(text, owner)
@@ -307,11 +341,13 @@ def import_schedule(
         logger.info("Attempt %d: %s", result.attempts, summary)
 
         try:
-            raw = llm.ask(prompt, SYSTEM_PROMPT)
-        except Exception as exc:  # API/network failures must not crash the app
-            logger.error("LLM call failed: %s", exc)
-            trace.write(f"Attempt {result.attempts} ({summary})", f"LLM call failed: {exc}")
-            errors = [f"LLM call failed: {exc}"]
+            raw = safe_ask(llm, prompt, SYSTEM_PROMPT)
+        except LLMUnavailable as exc:  # API/network failures must not crash the app
+            trace.write(
+                f"Attempt {result.attempts} ({summary})",
+                f"LLM call failed: {exc}\n\nDetails: {exc.__cause__}",
+            )
+            errors = [f"AI unavailable: {exc}"]
             break
 
         logger.debug("Raw response: %s", raw)
@@ -343,18 +379,40 @@ def import_schedule(
         result.rejected.extend(rejected)
 
     for task, pet, confidence in valid:
-        pet.add_task(task)
-        result.added.append(AddedTask(task, confidence))
+        if commit:
+            pet.add_task(task)
+        result.added.append(AddedTask(task, confidence, pet))
 
+    verb = "added" if commit else "proposed for review"
     outcome = (
-        f"{len(result.added)} added, {len(result.rejected)} rejected, "
+        f"{len(result.added)} {verb}, {len(result.rejected)} rejected, "
         f"{result.attempts} attempt(s)"
     )
     logger.info("Import finished: %s", outcome)
-    lines = [f"- added: {a.task.title} ({a.task.pet.name}, confidence {a.confidence:.2f})" for a in result.added]
+    lines = [f"- {verb}: {a.task.title} ({a.pet.name}, confidence {a.confidence:.2f})" for a in result.added]
     lines += [f"- rejected: {'; '.join(r.reasons)}" for r in result.rejected]
     trace.write("Final outcome", outcome + ("\n\n" + "\n".join(lines) if lines else ""))
     return result
+
+
+def commit_tasks(owner: Owner, proposed: list[AddedTask], day: date | None = None) -> tuple[list[AddedTask], list[RejectedItem]]:
+    """Add the tasks a person approved, re-checking conflicts at commit time.
+
+    The owner may have edited their tasks between preview and confirm, so a
+    task that now clashes is refused rather than added blindly.
+    """
+    day = day or date.today()
+    added: list[AddedTask] = []
+    refused: list[RejectedItem] = []
+    for proposal in proposed:
+        clashes = new_conflicts(owner, [], proposal.task, proposal.pet, day)
+        if clashes:
+            refused.append(RejectedItem(proposal.task.title, [f"conflict: {c}" for c in clashes]))
+            continue
+        proposal.pet.add_task(proposal.task)
+        added.append(proposal)
+    logger.info("Committed %d task(s), refused %d", len(added), len(refused))
+    return added, refused
 
 
 # --- CLI ---------------------------------------------------------------------
@@ -396,6 +454,8 @@ def main(argv: list[str] | None = None) -> int:
     result = import_schedule(args.text, owner, llm)
 
     print(f"\nAttempts: {result.attempts}")
+    for warning in result.warnings:
+        print(f"Guardrail: {warning}")
     print("Added:")
     for a in result.added or []:
         t = a.task
