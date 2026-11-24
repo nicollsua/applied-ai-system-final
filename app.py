@@ -15,10 +15,13 @@ an ordinary dict and no Streamlit runtime.
 
 from __future__ import annotations
 
+import os
 from datetime import date, time
 from typing import MutableMapping
 
 import streamlit as st
+
+from llm import GeminiLLM  # importing llm also loads .env
 
 # Step 1: bring the logic-layer classes into the UI.
 from pawpal_system import (
@@ -29,6 +32,7 @@ from pawpal_system import (
     Scheduler,
     Task,
 )
+from schedule_agent import ImportResult, commit_tasks, import_schedule
 
 WEEKDAY_NAMES = [
     "Monday",
@@ -255,6 +259,57 @@ def describe_task(task: Task) -> str:
     return f"**{task.title}** &nbsp; " + " &nbsp;·&nbsp; ".join(parts)
 
 
+def ai_available(state: MutableMapping) -> bool:
+    """Return True if an LLM is injected (tests) or a Gemini key is set."""
+    return state.get("llm") is not None or bool(os.getenv("GEMINI_API_KEY"))
+
+
+def get_llm(state: MutableMapping):
+    """Return the session's LLM, creating the Gemini client on first use.
+
+    Created lazily so simply opening the app never touches the network, and
+    stored in state so a test can inject a FakeLLM under the "llm" key.
+    """
+    if state.get("llm") is None:
+        state["llm"] = GeminiLLM()
+    return state["llm"]
+
+
+def run_import(
+    state: MutableMapping, owner: Owner, text: str, day: date
+) -> ImportResult:
+    """Ask the agent to read pasted text, in preview mode (nothing added yet)."""
+    result = import_schedule(text, owner, get_llm(state), day=day,
+                             commit=False)
+    state["pending_import"] = result
+    state["import_run"] = state.get("import_run", 0) + 1
+    return result
+
+
+def describe_proposal(proposal) -> str:
+    """One line for a proposed import, with its confidence."""
+    task = proposal.task
+    flag = " ⚠️ low confidence, please check" if proposal.low_confidence else ""
+    return (
+        f"**{task.title}** ({proposal.pet.name}) · {task.duration_minutes} min"
+        f" · {task.priority.value} · {describe_frequency(task)} · "
+        f"{describe_time(task)} · confidence {proposal.confidence:.0%}{flag}"
+    )
+
+
+def confirm_import(
+    state: MutableMapping, owner: Owner, keep: list[bool], day: date
+) -> tuple[list, list]:
+    """Add the proposals the owner kept ticked, then clear the preview."""
+    result = state.get("pending_import")
+    if result is None:
+        return [], []
+    chosen = [p for p, k in zip(result.added, keep) if k]
+    added, refused = commit_tasks(owner, chosen, day)
+    state["pending_import"] = None
+    return added, refused
+
+
 def describe_frequency(task: Task) -> str:
     """Describe a task's recurrence in words, e.g. "weekly (Monday)"."""
     if task.frequency is Frequency.WEEKLY:
@@ -397,6 +452,72 @@ def render_add_task(owner: Owner) -> None:
                 st.rerun()
 
 
+IMPORT_PLACEHOLDER = (
+    "Walk Biscuit every day at 9am for 30 minutes.\n"
+    "Give Mochi her pill at 8pm, it's important.\n"
+    "Bath for Biscuit on Saturdays, about 45 minutes."
+)
+
+
+def render_import(owner: Owner, day: date) -> None:
+    """Paste-a-schedule box: the agent proposes tasks, the owner confirms.
+
+    The AI never writes straight into the plan. Validated tasks come back as
+    a preview with confidence scores; low-confidence ones start unticked, and
+    only what the owner keeps ticked is added.
+    """
+    state = st.session_state
+    message = state.pop("import_message", None)
+    if message:
+        st.success(message)
+
+    with st.expander("✨ Import tasks from text (AI)",
+                     expanded=state.get("pending_import") is not None):
+        if not owner.pets:
+            st.caption("Add a pet first, then paste their schedule here.")
+            return
+        if not ai_available(state):
+            st.caption("Set GEMINI_API_KEY in a .env file to turn this on.")
+            return
+
+        text = st.text_area("Describe your pets' routine in plain words",
+                            placeholder=IMPORT_PLACEHOLDER, key="import_text")
+        if st.button("Read it with AI", key="import_run_button"):
+            with st.spinner("Reading your schedule and checking it..."):
+                run_import(state, owner, text, day)
+
+        result = state.get("pending_import")
+        if result is None:
+            return
+
+        for warning in result.warnings:
+            st.warning(warning)
+        st.caption(f"The AI took {result.attempts} attempt(s) to produce a "
+                   f"schedule that passed the checks.")
+
+        if result.added:
+            st.markdown("**Proposed tasks**: untick anything you don't want.")
+            run = state.get("import_run", 0)
+            keep = [
+                st.checkbox(describe_proposal(p), value=not p.low_confidence,
+                            key=f"import_keep_{run}_{i}")
+                for i, p in enumerate(result.added)
+            ]
+            if st.button("Add selected tasks", key="import_confirm"):
+                added, refused = confirm_import(state, owner, keep, day)
+                note = f"Added {len(added)} task(s) from your text."
+                if refused:
+                    note += f" {len(refused)} now clash and were left out."
+                state["import_message"] = note
+                st.rerun()
+
+        if result.rejected:
+            st.markdown("**Could not be added**")
+            for rejected in result.rejected:
+                for reason in rejected.reasons:
+                    st.markdown(f"- {reason}")
+
+
 def render_task_list(owner: Owner, day: date) -> None:
     """Draw the filterable, sortable task list with a Done button each.
 
@@ -524,6 +645,7 @@ def main() -> None:
     render_add_pet(owner)
     st.divider()
     render_add_task(owner)
+    render_import(owner, day)
     render_task_list(owner, day)
     st.divider()
     render_conflicts(owner, day)

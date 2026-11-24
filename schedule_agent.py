@@ -297,7 +297,7 @@ def import_schedule(
     llm: LLM,
     day: date | None = None,
     max_retries: int = MAX_RETRIES,
-    trace_path: Path | str | None = TRACE_PATH,
+    trace_path: Path | str | None = "default",
     commit: bool = True,
 ) -> ImportResult:
     """Parse plain text into tasks with the LLM, validate, retry, and add the valid ones.
@@ -307,7 +307,7 @@ def import_schedule(
     call commit_tasks() with the ones they keep.
     """
     day = day or date.today()
-    trace = Trace(trace_path)
+    trace = Trace(TRACE_PATH if trace_path == "default" else trace_path)
     result = ImportResult(committed=commit)
 
     trace.write(
