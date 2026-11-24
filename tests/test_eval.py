@@ -12,3 +12,12 @@ def test_check_reports_mismatch():
     case = harness.Case("x", "t", [], added=1, reject_has="conflict")
     ok, note = harness.check(case, ImportResult())
     assert not ok and "expected 1 added" in note and "conflict" in note
+
+
+def test_demo_runs_offline(capsys, monkeypatch):
+    import guardrails
+    import demo
+    monkeypatch.setattr(guardrails, "_sleep", lambda s: None)
+    assert demo.main([]) == 0
+    out = capsys.readouterr().out
+    assert "unknown pet 'Rex'" in out and "fallback=True" in out and "Riptide" in out

@@ -456,7 +456,8 @@ def main(argv: list[str] | None = None) -> int:
 
     llm = GeminiLLM() if args.live else FakeLLM(default=SAMPLE_RESPONSE)
     owner = sample_owner()
-    result = import_schedule(args.text, owner, llm)
+    result = import_schedule(args.text, owner, llm,
+                             trace_path="default" if args.live else None)
 
     print(f"\nAttempts: {result.attempts}")
     for warning in result.warnings:

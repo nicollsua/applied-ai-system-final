@@ -124,7 +124,7 @@ def check(case: Case, result: ImportResult) -> tuple[bool, str]:
     return not problems, "; ".join(problems) or "ok"
 
 
-def run_import_cases(live: bool, trace: Path | None) -> tuple[list[list[str]], list[float], int]:
+def run_import_cases(live: bool, trace: Path | str | None) -> tuple[list[list[str]], list[float], int]:
     llm_live = None
     if live:
         from llm import GeminiLLM
@@ -188,7 +188,8 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.ERROR)
 
     mode = "live Gemini" if args.live else "offline FakeLLM"
-    import_rows, confidences, import_passed = run_import_cases(args.live, trace=None)
+    trace = "default" if args.live else None  # live runs are kept in logs/agent_trace.md
+    import_rows, confidences, import_passed = run_import_cases(args.live, trace=trace)
     music_rows, music_passed = run_music_cases(args.live)
 
     avg = sum(confidences) / len(confidences) if confidences else 0.0
